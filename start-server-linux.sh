@@ -162,6 +162,71 @@ models_complete() {
          || [[ -f data/models/finetuned/checkpoints/pose_adapter_latest.pt ]]; }
 }
 
+# One-shot HTTPS check — no retries (retries won't fix broken TLS on the host).
+hf_https_probe() {
+  local url="${1:-https://huggingface.co}"
+  echo "==> Checking HTTPS to ${url}"
+  if have_cmd curl; then
+    if curl --http1.1 -fsS -o /dev/null --connect-timeout 15 --max-time 30 "${url}"; then
+      echo "    OK (curl --http1.1)"
+      return 0
+    fi
+    echo "    FAIL: curl cannot complete TLS to ${url}"
+    return 1
+  fi
+  if have_cmd wget; then
+    if wget --timeout=15 --tries=1 -q -O /dev/null "${url}"; then
+      echo "    OK (wget)"
+      return 0
+    fi
+    echo "    FAIL: wget cannot reach ${url}"
+    return 1
+  fi
+  echo "    WARN: no curl/wget — skipping probe"
+  return 0
+}
+
+# Refresh CA store once (common Vast image gap). Not a download retry.
+maybe_fix_ca_certs() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]] || ! have_cmd apt-get; then
+    return 0
+  fi
+  echo "==> Ensuring ca-certificates (apt, once)"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get install -y -qq ca-certificates curl >/dev/null 2>&1 || true
+  update-ca-certificates >/dev/null 2>&1 || true
+}
+
+# Download one HF resolve URL via curl HTTP/1.1 with a progress bar.
+# Uses a different TLS stack than Python urllib — not a "retry" of the same call.
+hf_curl_file() {
+  local repo="$1"
+  local rel="$2"
+  local dest="$3"
+  local token="${4:-}"
+  local base="${HF_ENDPOINT:-https://huggingface.co}"
+  base="${base%/}"
+  local url="${base}/${repo}/resolve/main/${rel}"
+  mkdir -p "$(dirname "${dest}")"
+  if [[ -f "${dest}" ]] && [[ $(stat -c%s "${dest}" 2>/dev/null || echo 0) -gt 1000 ]]; then
+    echo "    skip (exists) ${rel}"
+    return 0
+  fi
+  echo "    ↓ ${rel}"
+  local args=(--http1.1 -L --fail --connect-timeout 30 --retry 0 --progress-bar)
+  if [[ -n "${token}" ]]; then
+    args+=(-H "Authorization: Bearer ${token}")
+  fi
+  # -# progress bar to stderr; write to temp then mv
+  local tmp="${dest}.partial"
+  if ! curl "${args[@]}" -o "${tmp}" "${url}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  mv -f "${tmp}" "${dest}"
+}
+
 download_models() {
   mkdir -p data/models data/refs outputs
 
@@ -170,92 +235,108 @@ download_models() {
     return 0
   fi
 
-  echo "==> Downloading models from Hugging Face (${HF_REPO})"
-  echo "    (per-file progress bars below — multi‑GB, may take several minutes)"
-  if [[ -n "${HF_TOKEN:-}" ]]; then
-    export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
+  local token="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
+  if [[ -n "${token}" ]]; then
+    export HF_TOKEN="${token}"
+    export HUGGING_FACE_HUB_TOKEN="${token}"
   fi
 
-  # Ensure tqdm is present even if requirements install was skipped/partial
-  pip install --progress-bar on -q tqdm huggingface_hub
+  maybe_fix_ca_certs
 
-  python - <<'PY'
-import os
-import sys
-from pathlib import Path
-
-from huggingface_hub import HfApi, snapshot_download
-from huggingface_hub.utils import enable_progress_bars
-from tqdm.auto import tqdm
-
-# Vast / docker attach often isn't a TTY — force bars anyway.
-enable_progress_bars()
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
-
-
-class ForceTqdm(tqdm):
-    def __init__(self, *args, **kwargs):
-        kwargs["disable"] = False
-        kwargs.setdefault("mininterval", 0.3)
-        kwargs.setdefault("file", sys.stdout)
-        kwargs.setdefault("dynamic_ncols", True)
-        super().__init__(*args, **kwargs)
-
-
-repo = os.environ.get("HF_REPO", "sinBoo1/models-VT-prototype")
-dest = Path("data/models")
-dest.mkdir(parents=True, exist_ok=True)
-token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-
-try:
-    api = HfApi(token=token)
-    info = api.repo_info(repo_id=repo, repo_type="model", files_metadata=True)
-    siblings = list(getattr(info, "siblings", None) or [])
-    total = sum(int(getattr(s, "size", 0) or 0) for s in siblings)
-    print(f"    repo={repo}", flush=True)
-    print(f"    files={len(siblings)}  total≈{total / (1024**3):.2f} GiB → {dest.resolve()}", flush=True)
-    for s in siblings:
-        size = int(getattr(s, "size", 0) or 0)
-        name = getattr(s, "rfilename", "?")
-        if size >= 1024**3:
-            print(f"      • {name}  {size / (1024**3):.2f} GiB", flush=True)
-        elif size > 0:
-            print(f"      • {name}  {size / (1024**2):.1f} MiB", flush=True)
-        else:
-            print(f"      • {name}", flush=True)
-except Exception as exc:
-    print(f"    (could not list repo metadata: {exc})", flush=True)
-    print(f"snapshot_download {repo} -> {dest.resolve()}", flush=True)
-
-try:
-    snapshot_download(
-        repo_id=repo,
-        repo_type="model",
-        local_dir=str(dest),
-        token=token,
-        tqdm_class=ForceTqdm,
-    )
-except TypeError:
-    # Older huggingface_hub without tqdm_class=
-    snapshot_download(
-        repo_id=repo,
-        repo_type="model",
-        local_dir=str(dest),
-        token=token,
-    )
-except Exception as exc:
-    print(f"ERROR: Hugging Face download failed: {exc}", flush=True)
-    print("       If the repo is private, export HF_TOKEN=hf_... and retry.", flush=True)
-    sys.exit(1)
-print("download complete", flush=True)
-PY
-
-  # Public fallback for Anything V5 + IP-Adapter if HF snapshot layout was incomplete
-  if [[ ! -f data/models/AnythingV5V3_v5PrtRE.safetensors ]] \
-     || [[ ! -f data/models/ip-adapter/models/ip-adapter_sd15.bin ]]; then
-    echo "==> Filling public weights via backend.download_model"
-    python -m backend.download_model
+  local hf_base="${HF_ENDPOINT:-https://huggingface.co}"
+  if ! hf_https_probe "${hf_base}"; then
+    echo ""
+    echo "ERROR: This machine cannot open a working HTTPS session to Hugging Face."
+    echo "       That is a host/network/TLS problem — retrying the same download will not help."
+    echo "       Fix one of:"
+    echo "         • outbound HTTPS / firewall on this Vast image"
+    echo "         • CA certs (we tried apt ca-certificates if root)"
+    echo "         • set HF_ENDPOINT to a reachable mirror if you use one"
+    echo "         • copy data/models/ onto the box some other way"
+    exit 1
   fi
+
+  echo "==> Downloading models (curl HTTP/1.1 + progress bar)"
+  echo "    repo: ${HF_REPO}"
+  echo "    dest: $(pwd)/data/models"
+  if [[ -z "${token}" ]]; then
+    echo "    note: no HF_TOKEN set — private repos will 401"
+  fi
+
+  # Prefer curl over Python huggingface_hub: Vast often breaks Python SSL
+  # (SSLEOFError) while curl --http1.1 still works. No Python retry loop.
+  local -a required=(
+    "AnythingV5V3_v5PrtRE.safetensors"
+    "ip-adapter/models/ip-adapter_sd15.bin"
+    "ip-adapter/models/ip-adapter_sd15_light.bin"
+    "ip-adapter/models/ip-adapter-plus_sd15.bin"
+    "ip-adapter/models/image_encoder/config.json"
+    "ip-adapter/models/image_encoder/preprocessor_config.json"
+    "finetuned/param_stats.json"
+    "finetuned/checkpoints/pose_adapter_step_020000.pt"
+  )
+  # image encoder weight — try safetensors first, then bin
+  local -a encoder_weights=(
+    "ip-adapter/models/image_encoder/model.safetensors"
+    "ip-adapter/models/image_encoder/pytorch_model.bin"
+  )
+
+  local fail=0
+  local rel
+  for rel in "${required[@]}"; do
+    if ! hf_curl_file "${HF_REPO}" "${rel}" "data/models/${rel}" "${token}"; then
+      echo "    FAIL ${rel}"
+      fail=1
+    fi
+  done
+
+  local got_encoder=0
+  for rel in "${encoder_weights[@]}"; do
+    if [[ -f "data/models/${rel}" ]] && [[ $(stat -c%s "data/models/${rel}" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+      got_encoder=1
+      break
+    fi
+    if hf_curl_file "${HF_REPO}" "${rel}" "data/models/${rel}" "${token}"; then
+      got_encoder=1
+      break
+    fi
+  done
+  if [[ "${got_encoder}" -ne 1 ]]; then
+    echo "    FAIL image_encoder weights"
+    fail=1
+  fi
+
+  if [[ "${fail}" -ne 0 ]]; then
+    echo ""
+    echo "==> Bundle incomplete — trying public Anything V5 + IP-Adapter (still curl HTTP/1.1)"
+    # Public fallbacks: different repos, same TLS path (not a blind retry of the private bundle).
+    hf_curl_file "ckpt/anything-v5.0" "AnythingV5V3_v5PrtRE.safetensors" \
+      "data/models/AnythingV5V3_v5PrtRE.safetensors" "" || true
+    local pub
+    for pub in \
+      "models/ip-adapter_sd15.bin" \
+      "models/ip-adapter_sd15_light.bin" \
+      "models/ip-adapter-plus_sd15.bin" \
+      "models/image_encoder/config.json" \
+      "models/image_encoder/preprocessor_config.json" \
+      "models/image_encoder/model.safetensors" \
+      "models/image_encoder/pytorch_model.bin"
+    do
+      hf_curl_file "h94/IP-Adapter" "${pub}" "data/models/ip-adapter/${pub}" "" || true
+    done
+  fi
+
+  if ! models_complete; then
+    echo ""
+    echo "ERROR: model download did not produce a complete set."
+    echo "       Likely causes (not fixed by retrying):"
+    echo "         • HF_TOKEN missing/wrong for private ${HF_REPO}"
+    echo "         • TLS/network path to Hugging Face broken on this host"
+    echo "         • repo layout missing expected files"
+    echo "       Set HF_TOKEN if private, or copy weights into data/models/ manually."
+    exit 1
+  fi
+  echo "==> Model download complete"
 }
 
 verify_models() {
