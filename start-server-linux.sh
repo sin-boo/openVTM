@@ -154,10 +154,12 @@ PY
 }
 
 models_complete() {
+  local enc="data/models/ip-adapter/models/image_encoder"
   [[ -f data/models/AnythingV5V3_v5PrtRE.safetensors ]] \
     && [[ -f data/models/ip-adapter/models/ip-adapter_sd15.bin ]] \
     && [[ -f data/models/ip-adapter/models/ip-adapter-plus_sd15.bin ]] \
-    && [[ -d data/models/ip-adapter/models/image_encoder ]] \
+    && [[ -f "${enc}/config.json" ]] \
+    && { [[ -f "${enc}/model.safetensors" ]] || [[ -f "${enc}/pytorch_model.bin" ]]; } \
     && { [[ -f data/models/finetuned/checkpoints/pose_adapter_step_020000.pt ]] \
          || [[ -f data/models/finetuned/checkpoints/pose_adapter_latest.pt ]]; }
 }
@@ -328,10 +330,12 @@ verify_models() {
       ok=0
     fi
   done
-  if [[ -d data/models/ip-adapter/models/image_encoder ]]; then
-    echo "    OK  data/models/ip-adapter/models/image_encoder/"
+  local enc="data/models/ip-adapter/models/image_encoder"
+  if [[ -f "${enc}/config.json" ]] \
+    && { [[ -f "${enc}/model.safetensors" ]] || [[ -f "${enc}/pytorch_model.bin" ]]; }; then
+    echo "    OK  ${enc}/ (config + weights)"
   else
-    echo "    MISSING data/models/ip-adapter/models/image_encoder/"
+    echo "    MISSING ${enc}/ weights (need model.safetensors or pytorch_model.bin)"
     ok=0
   fi
   if [[ -f data/models/finetuned/checkpoints/pose_adapter_step_020000.pt ]]; then
