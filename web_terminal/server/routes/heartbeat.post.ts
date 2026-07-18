@@ -1,4 +1,4 @@
-import { heartbeatSession, ttlSeconds } from '../utils/servers'
+import { heartbeatSession, ttlSeconds, storageMode } from '../utils/servers'
 
 /**
  * Authenticated keep-alive (every ~2s). Session from /handshake — no join token.
@@ -25,7 +25,7 @@ export default defineEventHandler(async (event) => {
   const vram_free =
     vramRaw === undefined || vramRaw === null ? undefined : Number(vramRaw)
 
-  const server = heartbeatSession({
+  const server = await heartbeatSession({
     session,
     ready: body.ready === undefined ? undefined : Boolean(body.ready),
     load,
@@ -42,8 +42,14 @@ export default defineEventHandler(async (event) => {
     return {
       ok: false,
       error: 'session expired or unknown — call /handshake again',
+      storage: storageMode(),
     }
   }
 
-  return { ok: true, server, ttl_seconds: ttlSeconds() }
+  return {
+    ok: true,
+    server,
+    ttl_seconds: ttlSeconds(),
+    storage: storageMode(),
+  }
 })

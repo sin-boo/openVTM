@@ -1,4 +1,4 @@
-import { handshakeServer, ttlSeconds } from '../utils/servers'
+import { handshakeServer, ttlSeconds, storageMode } from '../utils/servers'
 import { assertJoinToken } from '../utils/join'
 
 /**
@@ -36,7 +36,7 @@ export default defineEventHandler(async (event) => {
 
   const load = Number(body.load ?? 0)
   const ready = Boolean(body.ready)
-  const { server, session } = handshakeServer({
+  const { server, session } = await handshakeServer({
     public_url,
     ready,
     load: Number.isFinite(load) ? load : 0,
@@ -47,6 +47,7 @@ export default defineEventHandler(async (event) => {
     session,
     server,
     ttl_seconds: ttlSeconds(),
+    storage: storageMode(),
     message: 'handshake accepted — use session for /heartbeat',
   }
 })

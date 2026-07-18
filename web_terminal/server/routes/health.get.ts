@@ -1,4 +1,5 @@
 import { getJoinToken } from '../utils/join'
+import { storageMode, ttlSeconds } from '../utils/servers'
 
 export default defineEventHandler((event) => {
   const join_token = getJoinToken(event)
@@ -7,6 +8,7 @@ export default defineEventHandler((event) => {
     service: 'openvtm-web-terminal',
     runtime: 'nitro',
     time: new Date().toISOString(),
+    storage: storageMode(),
     /** Present only when BROKER_TOKEN is set in the environment — never from source. */
     join_token: join_token || null,
     token_configured: Boolean(join_token),
@@ -15,6 +17,7 @@ export default defineEventHandler((event) => {
       handshake: 'POST /handshake',
       heartbeat: 'POST /heartbeat',
       interval_s: 2,
+      ttl_seconds: ttlSeconds(),
     },
   }
 })

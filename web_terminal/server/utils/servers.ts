@@ -11,25 +11,20 @@ export type ServerRecord = {
 
 type Stored = ServerRecord & { expires_at: number; session: string }
 
-/** Miss ~3 heartbeats at 2s interval before dropping. */
-const TTL_MS = 8_000
+/** Miss a few heartbeats at 2s interval before dropping. */
+const TTL_MS = 15_000
+const TTL_S = Math.ceil(TTL_MS / 1000)
 
-const store = new Map<string, Stored>()
-/** session -> server id */
-const sessions = new Map<string, string>()
+const KEY_IDS = 'broker:ids'
+const recKey = (id: string) => `broker:rec:${id}`
+const sessKey = (session: string) => `broker:sess:${session}`
+
+/** In-memory fallback — OK for local `nitro dev`, NOT for multi-instance Vercel. */
+const memStore = new Map<string, Stored>()
+const memSessions = new Map<string, string>()
 
 export function ttlSeconds(): number {
-  return TTL_MS / 1000
-}
-
-function prune(): void {
-  const now = Date.now()
-  for (const [id, rec] of store) {
-    if (rec.expires_at <= now) {
-      store.delete(id)
-      sessions.delete(rec.session)
-    }
-  }
+  return TTL_S
 }
 
 function publicRecord(rec: Stored): ServerRecord {
@@ -43,15 +38,151 @@ function newSessionId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-export function listServers(): ServerRecord[] {
-  prune()
-  return [...store.values()]
-    .map(publicRecord)
-    .sort((a, b) => b.updated_at - a.updated_at)
+function upstashConfigured(): boolean {
+  return Boolean(
+    process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
+  )
 }
 
-export function pickBest(): ServerRecord | null {
-  const servers = listServers()
+async function redisCmd<T = unknown>(args: Array<string | number>): Promise<T> {
+  const url = process.env.UPSTASH_REDIS_REST_URL
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN
+  if (!url || !token) {
+    throw new Error('Upstash not configured')
+  }
+  const res = await fetch(`${url.replace(/\/$/, '')}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(args),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Upstash ${res.status}: ${text.slice(0, 200)}`)
+  }
+  const payload = (await res.json()) as { result?: T; error?: string }
+  if (payload.error) throw new Error(payload.error)
+  return payload.result as T
+}
+
+async function redisPipeline(
+  commands: Array<Array<string | number>>,
+): Promise<unknown[]> {
+  const url = process.env.UPSTASH_REDIS_REST_URL
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN
+  if (!url || !token) {
+    throw new Error('Upstash not configured')
+  }
+  const res = await fetch(`${url.replace(/\/$/, '')}/pipeline`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(commands),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`Upstash pipeline ${res.status}: ${text.slice(0, 200)}`)
+  }
+  const payload = (await res.json()) as Array<{ result?: unknown; error?: string }>
+  return payload.map((row) => {
+    if (row.error) throw new Error(row.error)
+    return row.result
+  })
+}
+
+function memPrune(): void {
+  const now = Date.now()
+  for (const [id, rec] of memStore) {
+    if (rec.expires_at <= now) {
+      memStore.delete(id)
+      memSessions.delete(rec.session)
+    }
+  }
+}
+
+async function saveRecord(rec: Stored): Promise<void> {
+  if (!upstashConfigured()) {
+    memStore.set(rec.id, rec)
+    memSessions.set(rec.session, rec.id)
+    return
+  }
+  const payload = JSON.stringify(rec)
+  await redisPipeline([
+    ['SET', recKey(rec.id), payload, 'EX', TTL_S],
+    ['SET', sessKey(rec.session), rec.id, 'EX', TTL_S],
+    ['SADD', KEY_IDS, rec.id],
+  ])
+}
+
+async function loadBySession(session: string): Promise<Stored | null> {
+  if (!upstashConfigured()) {
+    memPrune()
+    const id = memSessions.get(session)
+    if (!id) return null
+    const prev = memStore.get(id)
+    if (!prev || prev.session !== session) return null
+    return prev
+  }
+  const id = await redisCmd<string | null>(['GET', sessKey(session)])
+  if (!id) return null
+  const raw = await redisCmd<string | null>(['GET', recKey(id)])
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as Stored
+  } catch {
+    return null
+  }
+}
+
+export async function listServers(): Promise<ServerRecord[]> {
+  if (!upstashConfigured()) {
+    memPrune()
+    return [...memStore.values()]
+      .map(publicRecord)
+      .sort((a, b) => b.updated_at - a.updated_at)
+  }
+
+  const ids = (await redisCmd<string[]>(['SMEMBERS', KEY_IDS])) || []
+  if (ids.length === 0) return []
+
+  const results = await redisPipeline(ids.map((id) => ['GET', recKey(id)]))
+  const alive: ServerRecord[] = []
+  const stale: string[] = []
+
+  for (let i = 0; i < ids.length; i++) {
+    const raw = results[i]
+    if (typeof raw !== 'string' || !raw) {
+      stale.push(ids[i]!)
+      continue
+    }
+    try {
+      const rec = JSON.parse(raw) as Stored
+      if (rec.expires_at <= Date.now()) {
+        stale.push(ids[i]!)
+        continue
+      }
+      alive.push(publicRecord(rec))
+    } catch {
+      stale.push(ids[i]!)
+    }
+  }
+
+  if (stale.length) {
+    await redisPipeline([
+      ['SREM', KEY_IDS, ...stale],
+      ...stale.map((id) => ['DEL', recKey(id)] as Array<string | number>),
+    ]).catch(() => undefined)
+  }
+
+  return alive.sort((a, b) => b.updated_at - a.updated_at)
+}
+
+export async function pickBest(): Promise<ServerRecord | null> {
+  const servers = await listServers()
   if (servers.length === 0) return null
   const sorted = [...servers].sort((a, b) => {
     if (a.ready !== b.ready) return a.ready ? -1 : 1
@@ -62,12 +193,11 @@ export function pickBest(): ServerRecord | null {
 }
 
 /** First contact: validate join token outside this helper, then create session. */
-export function handshakeServer(input: {
+export async function handshakeServer(input: {
   public_url: string
   ready?: boolean
   load?: number
-}): { server: ServerRecord; session: string } {
-  prune()
+}): Promise<{ server: ServerRecord; session: string }> {
   const now = Date.now()
   const id = randomServerName()
   const session = newSessionId()
@@ -81,23 +211,19 @@ export function handshakeServer(input: {
     expires_at: now + TTL_MS,
     session,
   }
-  store.set(id, record)
-  sessions.set(session, id)
+  await saveRecord(record)
   return { server: publicRecord(record), session }
 }
 
-export function heartbeatSession(input: {
+export async function heartbeatSession(input: {
   session: string
   ready?: boolean
   load?: number
   vram_free?: number | null
   public_url?: string
-}): ServerRecord | null {
-  prune()
-  const id = sessions.get(input.session)
-  if (!id) return null
-  const prev = store.get(id)
-  if (!prev || prev.session !== input.session) return null
+}): Promise<ServerRecord | null> {
+  const prev = await loadBySession(input.session)
+  if (!prev) return null
 
   const now = Date.now()
   const load = input.load !== undefined ? Number(input.load) : prev.load
@@ -111,20 +237,19 @@ export function heartbeatSession(input: {
     updated_at: now,
     expires_at: now + TTL_MS,
   }
-  store.set(id, record)
+  await saveRecord(record)
   return publicRecord(record)
 }
 
 /** Legacy upsert kept for older clients still hitting /register with Bearer. */
-export function upsertServer(input: {
+export async function upsertServer(input: {
   id: string
   public_url: string
   load: number
   ready: boolean
   vram_free?: number | null
   session?: string
-}): ServerRecord {
-  prune()
+}): Promise<ServerRecord> {
   const now = Date.now()
   const session = input.session || newSessionId()
   const record: Stored = {
@@ -137,7 +262,10 @@ export function upsertServer(input: {
     expires_at: now + TTL_MS,
     session,
   }
-  store.set(record.id, record)
-  sessions.set(session, record.id)
+  await saveRecord(record)
   return publicRecord(record)
+}
+
+export function storageMode(): 'upstash' | 'memory' {
+  return upstashConfigured() ? 'upstash' : 'memory'
 }

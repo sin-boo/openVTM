@@ -1,4 +1,4 @@
-import { upsertServer, ttlSeconds } from '../utils/servers'
+import { upsertServer, ttlSeconds, storageMode } from '../utils/servers'
 import { assertJoinToken } from '../utils/join'
 import { randomServerName } from '../utils/names'
 
@@ -39,7 +39,7 @@ export default defineEventHandler(async (event) => {
   const vram_free =
     vramRaw === undefined || vramRaw === null ? null : Number(vramRaw)
 
-  const server = upsertServer({
+  const server = await upsertServer({
     id,
     public_url,
     load: Number.isFinite(load) ? load : 0,
@@ -48,5 +48,10 @@ export default defineEventHandler(async (event) => {
       vram_free !== null && Number.isFinite(vram_free) ? vram_free : null,
   })
 
-  return { ok: true, server, ttl_seconds: ttlSeconds() }
+  return {
+    ok: true,
+    server,
+    ttl_seconds: ttlSeconds(),
+    storage: storageMode(),
+  }
 })

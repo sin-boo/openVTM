@@ -25,7 +25,20 @@ npm run dev
 
 ## Vercel
 
-Set env **`BROKER_TOKEN`** (7 chars). Build: `npm run build`.
+Set env **`BROKER_TOKEN`** (7 chars).
+
+**Required for production:** Vercel serverless does not share in-memory Maps across
+invocations, so heartbeats will 401 unless you attach durable Redis:
+
+1. Create a free DB at [Upstash](https://upstash.com/)
+2. In the Vercel project, add:
+   - `UPSTASH_REDIS_REST_URL`
+   - `UPSTASH_REDIS_REST_TOKEN`
+3. Redeploy
+
+Check `GET /health` → `"storage":"upstash"` (not `"memory"`).
+
+Build: `npm run build`.
 
 ## GPU (Vast / Linux)
 
