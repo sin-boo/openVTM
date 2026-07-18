@@ -118,7 +118,7 @@ def start_broker_heartbeat(
         server_name = "?"
         _log(
             f"broker → {cfg['broker_url']} public_url={cfg['public_url']} "
-            f"token={cfg['token']} heartbeat={interval:.0f}s"
+            f"token=******* heartbeat={interval:.0f}s"
         )
 
         while True:

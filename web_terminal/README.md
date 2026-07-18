@@ -16,7 +16,7 @@ Dashboard shows the join token (copy button) and live servers.
 
 ```bash
 npm install
-export BROKER_TOKEN=ABC12XY   # exactly 7 A–Z / 0–9
+export BROKER_TOKEN=<YOUR_7_CHAR_TOKEN>   # set in env only — never commit
 npm run dev
 ```
 
@@ -31,7 +31,7 @@ Set env **`BROKER_TOKEN`** (7 chars). Build: `npm run build`.
 
 ```bash
 export BROKER_URL=https://webtermial.vercel.app
-export BROKER_TOKEN=ABC12XY          # same as Vercel
+export BROKER_TOKEN=<YOUR_7_CHAR_TOKEN>  # same as Vercel env — never commit
 export PUBLIC_URL=http://IP:MAPPED   # Vast open-port mapping for 8765
 ./start-server-linux.sh
 ```

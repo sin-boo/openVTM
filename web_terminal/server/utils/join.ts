@@ -4,14 +4,14 @@ import {
   resolveJoinToken,
 } from '../utils/token'
 
-let cachedToken: string | null = null
+let cachedToken: string | null | undefined
 
-export function getJoinToken(event: Parameters<typeof useRuntimeConfig>[0]): string {
-  if (cachedToken && isValidJoinToken(cachedToken)) return cachedToken
+export function getJoinToken(
+  event: Parameters<typeof useRuntimeConfig>[0],
+): string | null {
+  if (cachedToken !== undefined) return cachedToken
   const config = useRuntimeConfig(event)
-  const fromEnv = normalizeJoinToken(
-    String(config.brokerToken || config.brokerSecret || ''),
-  )
+  const fromEnv = String(config.brokerToken || config.brokerSecret || '')
   cachedToken = resolveJoinToken(fromEnv)
   return cachedToken
 }
@@ -21,6 +21,7 @@ export function assertJoinToken(
   provided: string,
 ): boolean {
   const expected = getJoinToken(event)
+  if (!expected) return false
   const got = normalizeJoinToken(provided)
   return isValidJoinToken(got) && got === expected
 }

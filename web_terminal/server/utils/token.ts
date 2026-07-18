@@ -19,10 +19,12 @@ export function generateJoinToken(): string {
   return out
 }
 
-/** Resolve the shared fleet token from runtime config / env. */
-export function resolveJoinToken(configured: string): string {
+/**
+ * Join token comes only from env (BROKER_TOKEN / BROKER_SECRET).
+ * Never hardcode a default secret in source.
+ */
+export function resolveJoinToken(configured: string): string | null {
   const normalized = normalizeJoinToken(configured || '')
   if (isValidJoinToken(normalized)) return normalized
-  // Fixed fallback when BROKER_TOKEN unset (override in production).
-  return 'VTMPREV'
+  return null
 }

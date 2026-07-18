@@ -110,17 +110,21 @@ export default function App() {
       <section className="token-panel">
         <div>
           <p className="label">Fleet join token</p>
-          <p className="token-value mono">{health?.join_token || '———————'}</p>
+          <p className="token-value mono">
+            {health?.token_configured && health.join_token
+              ? health.join_token
+              : 'NOT SET'}
+          </p>
           <p className="sub">
-            Same 7-character token on every GPU. Set{' '}
-            <code>BROKER_TOKEN</code> on Vercel and the Linux host.
+            Set <code>BROKER_TOKEN</code> in Vercel env (7 chars). Never commit
+            the token to git — copy it from here only after env is configured.
           </p>
         </div>
         <button
           type="button"
           className="btn"
           onClick={() => void copyToken()}
-          disabled={!health?.join_token}
+          disabled={!health?.token_configured || !health.join_token}
         >
           {copied ? 'Copied' : 'Copy token'}
         </button>

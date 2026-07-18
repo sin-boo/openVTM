@@ -30,8 +30,7 @@ web_terminal/dist/
 web_terminal/public/
 web_terminal/web/node_modules/
 
-# OS / IDE
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+# Secrets — never commit tokens
+.env
+.env.*
+!.env.example

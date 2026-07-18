@@ -40,7 +40,7 @@ Nitro + React dashboard. GPUs **handshake** with a shared 7-char `BROKER_TOKEN`,
 ```bash
 cd web_terminal
 npm install
-BROKER_TOKEN=ABC12XY npm run dev
+BROKER_TOKEN=<YOUR_7_CHAR_TOKEN> npm run dev
 # open http://localhost:5173
 ```
 
@@ -48,7 +48,7 @@ On the GPU machine:
 
 ```bash
 export BROKER_URL=https://webtermial.vercel.app
-export BROKER_TOKEN=ABC12XY                    # same 7 chars as Vercel
+export BROKER_TOKEN=<YOUR_7_CHAR_TOKEN>        # same 7 chars as Vercel — never commit
 export PUBLIC_URL=http://137.175.76.24:45323   # Vast mapped URL for port 8765
 ./start-server-linux.sh
 ```

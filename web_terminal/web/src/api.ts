@@ -10,7 +10,8 @@ export type ServerRecord = {
 export type HealthResponse = {
   ok: boolean
   service?: string
-  join_token?: string
+  join_token?: string | null
+  token_configured?: boolean
   auth?: {
     token_chars: number
     handshake: string

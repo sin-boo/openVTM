@@ -7,8 +7,9 @@ export default defineEventHandler((event) => {
     service: 'openvtm-web-terminal',
     runtime: 'nitro',
     time: new Date().toISOString(),
-    join_token,
-    /** GPU hosts: POST /handshake with this token, then POST /heartbeat every 2s with session. */
+    /** Present only when BROKER_TOKEN is set in the environment — never from source. */
+    join_token: join_token || null,
+    token_configured: Boolean(join_token),
     auth: {
       token_chars: 7,
       handshake: 'POST /handshake',
