@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         if hb is None:
             _file_log(
                 "broker heartbeat off "
-                "(set BROKER_URL, BROKER_SECRET, PUBLIC_URL to register)"
+                "(set BROKER_URL, BROKER_TOKEN, PUBLIC_URL to register)"
             )
     except Exception:
         _file_log("broker heartbeat failed to start:\n" + traceback.format_exc())

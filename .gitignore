@@ -20,12 +20,15 @@ build/
 outputs/
 *.log
 
-# Web terminal (Nitro)
+# Web terminal (Nitro + React)
 web_terminal/node_modules/
 web_terminal/.output/
 web_terminal/.nitro/
 web_terminal/.wrangler/
+web_terminal/.vercel/
 web_terminal/dist/
+web_terminal/public/
+web_terminal/web/node_modules/
 
 # OS / IDE
 .DS_Store

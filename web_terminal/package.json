@@ -1,16 +1,27 @@
 {
   "name": "openvtm-web-terminal",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
-    "dev": "nitro dev",
-    "build": "nitro build",
+    "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:api\"",
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev:api": "nitro dev --port 3000",
+    "build": "vite build --config web/vite.config.ts && node scripts/embed-ui.mjs && nitro build && node scripts/copy-static.mjs",
     "preview": "node .output/server/index.mjs",
     "start": "node .output/server/index.mjs"
   },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
   "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "concurrently": "^9.2.0",
     "nitropack": "^2.11.13",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
   }
 }

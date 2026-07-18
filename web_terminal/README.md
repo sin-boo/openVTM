@@ -1,70 +1,37 @@
-# openVTM Web Terminal (Nitro)
+# openVTM Web Terminal
 
-Discovery broker **with a status UI**. GPUs heartbeat in; clients call `/pick` for a `public_url`.  
-**Images never pass through this app.**
+**Nitro** discovery API + **React** status dashboard.
 
-## Run locally
+## Auth flow
+
+1. Set the same **7-character** join token on Vercel and every GPU (`BROKER_TOKEN`).
+2. GPU finishes loading → `POST /handshake` with `{ token, public_url }`.
+3. Broker assigns a **random server name** + **session**.
+4. GPU `POST /heartbeat` every **2 seconds** with `{ session }` (no token again).
+5. Miss ~8s of heartbeats → server drops offline.
+
+Dashboard shows the join token (copy button) and live servers.
+
+## Local
 
 ```bash
-cd web_terminal
 npm install
-export BROKER_SECRET=your-secret   # Windows: set BROKER_SECRET=...
+export BROKER_TOKEN=ABC12XY   # exactly 7 A–Z / 0–9
 npm run dev
 ```
 
-Open **http://localhost:3000** — dashboard shows broker health and live servers.
+- UI: http://localhost:5173  
+- API: http://localhost:3000  
 
-Production:
+## Vercel
 
-```bash
-npm run build
-BROKER_SECRET=your-secret npm start
-```
+Set env **`BROKER_TOKEN`** (7 chars). Build: `npm run build`.
 
-Deploy elsewhere with Nitro presets, e.g. `NITRO_PRESET=vercel npm run build`.
-
-## UI
-
-Browser dashboard at `/`:
-
-- Broker online / offline
-- Live server count + ready count
-- Current best pick
-- Table of registered GPUs (heartbeat age, load, public URL)
-- Auto-refresh every 5s
-
-## API (same as before)
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET | `/health` | no | Broker alive |
-| POST | `/register` | `Bearer BROKER_SECRET` | GPU heartbeat |
-| GET | `/servers` | no | List live servers |
-| GET | `/pick` | no | Best server |
-
-Heartbeat TTL: **45s**.
-
-### Register body
-
-```json
-{
-  "id": "vast-45250875",
-  "public_url": "http://137.175.76.24:45323",
-  "ready": true,
-  "load": 0
-}
-```
-
-## GPU env (Vast)
-
-Point `BROKER_URL` at this Nitro app (local, Vercel, or your host):
+## GPU (Vast / Linux)
 
 ```bash
-export BROKER_URL=https://your-web-terminal.example.com
-export BROKER_SECRET=your-secret
-export PUBLIC_URL=http://137.175.76.24:45323
-export SERVER_ID=vast-45250875
+export BROKER_URL=https://webtermial.vercel.app
+export BROKER_TOKEN=ABC12XY          # same as Vercel
+export PUBLIC_URL=http://IP:MAPPED   # Vast open-port mapping for 8765
 ./start-server-linux.sh
 ```
-
-Desktop UI: `VITE_BROKER_URL` = same base URL (calls `/pick` on startup).

@@ -96,9 +96,11 @@ fi
 echo "==> Starting API (server mode) on ${HOST}:${PORT}"
 echo "    Health: http://127.0.0.1:${PORT}/api/health"
 echo "    On Vast, use the mapped public IP:port for 8765 (see Open Ports)."
-if [[ -n "${BROKER_URL:-}" && -n "${PUBLIC_URL:-}" && -n "${BROKER_SECRET:-}" ]]; then
-  echo "    Broker: ${BROKER_URL}  PUBLIC_URL=${PUBLIC_URL}"
+if [[ -n "${BROKER_URL:-}" && -n "${PUBLIC_URL:-}" && ( -n "${BROKER_TOKEN:-}" || -n "${BROKER_SECRET:-}" ) ]]; then
+  echo "    Broker: ${BROKER_URL}"
+  echo "    PUBLIC_URL=${PUBLIC_URL}"
+  echo "    Join token set — will /handshake then /heartbeat every 2s"
 else
-  echo "    Broker: off (set BROKER_URL, BROKER_SECRET, PUBLIC_URL to register)"
+  echo "    Broker: off (set BROKER_URL, BROKER_TOKEN, PUBLIC_URL to register)"
 fi
 exec python -m backend --ui none --server-mode --host "${HOST}" --port "${PORT}"

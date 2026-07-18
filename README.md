@@ -35,26 +35,25 @@ export HF_TOKEN=hf_...
 
 ## Discovery broker (web terminal)
 
-Nitro app with a **status dashboard** + JSON discovery API. Images do **not** go through it.
+Nitro + React dashboard. GPUs **handshake** with a shared 7-char `BROKER_TOKEN`, get a random name + session, then **heartbeat every 2s**.
 
 ```bash
 cd web_terminal
 npm install
-BROKER_SECRET=your-secret npm run dev
-# open http://localhost:3000
+BROKER_TOKEN=ABC12XY npm run dev
+# open http://localhost:5173
 ```
 
 On the GPU machine:
 
 ```bash
-export BROKER_URL=https://your-web-terminal.example.com
-export BROKER_SECRET=your-secret
+export BROKER_URL=https://webtermial.vercel.app
+export BROKER_TOKEN=ABC12XY                    # same 7 chars as Vercel
 export PUBLIC_URL=http://137.175.76.24:45323   # Vast mapped URL for port 8765
-export SERVER_ID=vast-45250875                 # optional
 ./start-server-linux.sh
 ```
 
-Clients: `GET $BROKER_URL/pick` → use `server.public_url` for `/api/reference` + `/api/generate`.  
+Clients: `GET $BROKER_URL/pick` → use `server.public_url` for generate.  
 Desktop: set `VITE_BROKER_URL` to the web terminal URL.
 
 See [`web_terminal/README.md`](web_terminal/README.md).
