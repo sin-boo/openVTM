@@ -149,6 +149,9 @@ def start_broker_heartbeat(
                         _log(f"broker session lost ({res.get('error')}) — re-handshake")
                         session = None
                         continue
+                    # Signed sessions may rotate each heartbeat — keep the latest.
+                    if res.get("session"):
+                        session = str(res["session"])
                     server = res.get("server") or {}
                     _log(
                         f"broker heartbeat ok name={server.get('id', server_name)} "

@@ -3,6 +3,7 @@ import { heartbeatSession, ttlSeconds, storageMode } from '../utils/servers'
 /**
  * Authenticated keep-alive (every ~2s). Session from /handshake — no join token.
  * Body: { session, ready?, load?, vram_free?, public_url? }
+ * Returns a refreshed signed session (stateless — works across Vercel isolates).
  */
 export default defineEventHandler(async (event) => {
   let body: Record<string, unknown>
@@ -25,7 +26,7 @@ export default defineEventHandler(async (event) => {
   const vram_free =
     vramRaw === undefined || vramRaw === null ? undefined : Number(vramRaw)
 
-  const server = await heartbeatSession({
+  const result = await heartbeatSession({
     session,
     ready: body.ready === undefined ? undefined : Boolean(body.ready),
     load,
@@ -37,7 +38,7 @@ export default defineEventHandler(async (event) => {
         : String(body.public_url).trim(),
   })
 
-  if (!server) {
+  if (!result) {
     setResponseStatus(event, 401)
     return {
       ok: false,
@@ -48,7 +49,8 @@ export default defineEventHandler(async (event) => {
 
   return {
     ok: true,
-    server,
+    server: result.server,
+    session: result.session,
     ttl_seconds: ttlSeconds(),
     storage: storageMode(),
   }
