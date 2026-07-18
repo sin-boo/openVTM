@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# One-shot Linux GPU server setup + start (Vast / cloud, including RTX 5090).
+# One-shot Linux GPU server setup + start (Vast / Salad / cloud, including RTX 5090).
 # Zero-touch: venv → CUDA torch → server deps → HF models → API on 0.0.0.0:8765
-# No interactive prompts unless BROKER_PROMPT=1.
+# (auto-picks next free port if 8765 is busy). No interactive prompts unless BROKER_PROMPT=1.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")"
 
 export HF_REPO="${HF_REPO:-sinBoo1/models-VT-prototype}"
 HOST="${SDANIME_HOST:-0.0.0.0}"
+# Preferred port; if busy, script auto-picks the next free one unless SDANIME_PORT_STRICT=1.
 PORT="${SDANIME_PORT:-8765}"
 VENV_DIR="${VENV_DIR:-.venv}"
 BROKER_ENV_FILE="${BROKER_ENV_FILE:-.broker.env}"
@@ -27,10 +28,61 @@ export TQDM_MININTERVAL=0.3
 echo "==> SDAnime Pose server setup (Linux)"
 echo "    repo root: $(pwd)"
 echo "    HF models: ${HF_REPO}"
-echo "    bind: ${HOST}:${PORT}"
+echo "    preferred bind: ${HOST}:${PORT}"
 
 # --- helpers ---
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Pick a free TCP listen port. Uses python (ss/lsof/netstat often missing on cloud images).
+# Respects SDANIME_PORT as the preferred start; scans upward unless SDANIME_PORT_STRICT=1.
+pick_listen_port() {
+  local preferred="${1:-8765}"
+  local host="${2:-0.0.0.0}"
+  local strict="${SDANIME_PORT_STRICT:-0}"
+  local chosen
+  chosen="$(
+    PREFERRED="${preferred}" HOST_BIND="${host}" STRICT="${strict}" python3 - <<'PY'
+import os
+import socket
+import sys
+
+preferred = int(os.environ.get("PREFERRED", "8765"))
+host = os.environ.get("HOST_BIND", "0.0.0.0")
+strict = os.environ.get("STRICT", "0") == "1"
+span = 1 if strict else 64
+
+def free(port: int) -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+for port in range(preferred, preferred + span):
+    if free(port):
+        print(port)
+        raise SystemExit(0)
+print(f"ERROR: no free port in {preferred}..{preferred + span - 1}", file=sys.stderr)
+raise SystemExit(1)
+PY
+  )" || {
+    echo "ERROR: could not find a free listen port (preferred ${preferred})."
+    echo "       Free the old process or set SDANIME_PORT to an open port."
+    exit 1
+  }
+  PORT="${chosen}"
+  export PORT
+  if [[ "${PORT}" != "${preferred}" ]]; then
+    echo "==> Port ${preferred} busy — using ${PORT} instead"
+    echo "    (set SDANIME_PORT_STRICT=1 to fail instead of auto-picking)"
+  else
+    echo "==> Listen port ${PORT} is free"
+  fi
+}
 
 ensure_python() {
   if ! have_cmd python3; then
@@ -195,7 +247,16 @@ hf_curl_file() {
     hf_log "FAIL  ${rel}"
     return 1
   fi
-  mv -f "${tmp}" "${dest}"
+  mv -f "${tmp}" "${dest}" || {
+    # Parallel/racy second job: another curl may have already moved the file.
+    if [[ -s "${dest}" ]]; then
+      hf_log "DONE  ${rel} (already present after race)"
+      rm -f "${tmp}"
+      return 0
+    fi
+    hf_log "FAIL  ${rel} (mv missing partial)"
+    return 1
+  }
   local bytes
   bytes="$(wc -c < "${dest}" | tr -d ' ')"
   hf_log "DONE  ${rel} (${bytes} bytes)"
@@ -555,6 +616,7 @@ pip install -r "${REQ_FILE}" --progress-bar on
 
 download_models
 verify_models
+pick_listen_port "${PORT}" "${HOST}"
 configure_broker
 
 echo "==> Starting API (server mode) on ${HOST}:${PORT}"
