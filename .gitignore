@@ -34,3 +34,4 @@ web_terminal/web/node_modules/
 .env
 .env.*
 !.env.example
+.broker.env
