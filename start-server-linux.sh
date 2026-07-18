@@ -165,6 +165,7 @@ models_complete() {
 # Download one file from the configured public HF repo.
 # Force IPv4 because some Vast hosts advertise an unusable IPv6 route, causing
 # Python requests/curl to stall or end TLS with SSL_UNEXPECTED_EOF.
+# Quiet curl (no progress bar) so parallel jobs do not interleave bars.
 hf_curl_file() {
   local rel="$1"
   local dest="$2"
@@ -179,13 +180,33 @@ hf_curl_file() {
   fi
   echo "    ↓ ${rel}"
   local tmp="${dest}.partial"
-  if ! curl -4 --http1.1 -L --fail \
-      --connect-timeout 30 --retry 0 --progress-bar \
+  if ! curl -4 --http1.1 -L --fail --silent --show-error \
+      --connect-timeout 30 --retry 2 --retry-delay 2 \
       -o "${tmp}" "${url}"; then
     rm -f "${tmp}"
+    echo "    FAIL ${rel}"
     return 1
   fi
   mv -f "${tmp}" "${dest}"
+  echo "    ✓ ${rel}"
+}
+
+# Cap concurrent HF downloads (override with HF_DOWNLOAD_JOBS).
+# Helps folders like image_encoder (many small files / TLS handshakes).
+hf_wait_for_slot() {
+  local max_jobs="$1"
+  while true; do
+    local running
+    running="$(jobs -rp | wc -l | tr -d ' ')"
+    if [[ "${running}" -lt "${max_jobs}" ]]; then
+      return 0
+    fi
+    # Prefer wait -n (bash 4.3+); fall back to a short sleep.
+    # Ignore job exit status here — failures are recorded in fail_dir.
+    if ! wait -n 2>/dev/null; then
+      sleep 0.2
+    fi
+  done
 }
 
 download_models() {
@@ -235,18 +256,52 @@ PY
     exit 1
   fi
 
+  local max_jobs="${HF_DOWNLOAD_JOBS:-8}"
+  if ! [[ "${max_jobs}" =~ ^[1-9][0-9]*$ ]]; then
+    max_jobs=8
+  fi
+  if [[ "${max_jobs}" -gt 32 ]]; then
+    max_jobs=32
+  fi
+
   echo "==> Downloading every file from the public Hugging Face repository"
   echo "    repo: ${HF_REPO}"
   echo "    dest: $(pwd)/data/models"
   echo "    files: ${#repo_files[@]}"
+  echo "    parallel jobs: ${max_jobs} (set HF_DOWNLOAD_JOBS to change)"
+
+  local fail_dir
+  fail_dir="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${fail_dir}'" RETURN
 
   local rel
   for rel in "${repo_files[@]}"; do
-    if ! hf_curl_file "${rel}" "data/models/${rel}"; then
-      echo "ERROR: Failed downloading ${HF_REPO}/${rel} over forced IPv4."
-      exit 1
-    fi
+    hf_wait_for_slot "${max_jobs}"
+    (
+      if ! hf_curl_file "${rel}" "data/models/${rel}"; then
+        # One fail file per download (content = relative path). Avoids append races.
+        marker="$(printf '%s' "${rel}" | tr '/ ' '__')"
+        printf '%s\n' "${rel}" > "${fail_dir}/${marker}"
+      fi
+    ) &
   done
+  # Do not let a failed job trip set -e; we report via fail_dir below.
+  wait || true
+
+  local -a failed=()
+  local marker_file
+  for marker_file in "${fail_dir}"/*; do
+    [[ -e "${marker_file}" ]] || continue
+    failed+=("$(cat "${marker_file}")")
+  done
+  if [[ "${#failed[@]}" -gt 0 ]]; then
+    echo "ERROR: Failed downloading one or more files over forced IPv4:"
+    printf '       %s\n' "${failed[@]}" | sort -u
+    exit 1
+  fi
+  rm -rf "${fail_dir}"
+  trap - RETURN
 
   if ! models_complete; then
     echo ""
