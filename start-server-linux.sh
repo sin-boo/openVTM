@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-shot Linux GPU server setup + start (Vast / Salad / cloud, including RTX 5090).
-# Zero-touch: venv → CUDA torch → server deps → HF models → API on 0.0.0.0:8765
-# (auto-picks next free port if 8765 is busy). No interactive prompts unless BROKER_PROMPT=1.
+# venv → CUDA torch → server deps → HF models → API (auto port if busy).
+# Broker join-token prompt is ON by default (BROKER_PROMPT=0 to skip).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")"
 
@@ -506,6 +506,23 @@ normalize_token() {
   echo "$1" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9' | cut -c1-7
 }
 
+# Read a line from the real console when possible (Salad/Vast web shells
+# often have non-TTY stdin, so plain `read` never prompts).
+tty_read() {
+  local prompt="$1"
+  local reply=""
+  if [[ -r /dev/tty ]]; then
+    # shellcheck disable=SC2162
+    read -r -p "${prompt}" reply </dev/tty || true
+  elif [[ -t 0 ]]; then
+    read -r -p "${prompt}" reply || true
+  else
+    echo "WARNING: no TTY — cannot prompt interactively." >&2
+    echo "         Export BROKER_URL BROKER_TOKEN PUBLIC_URL instead." >&2
+  fi
+  printf '%s' "${reply}"
+}
+
 save_broker_env() {
   umask 077
   cat > "${BROKER_ENV_FILE}" <<EOF
@@ -518,30 +535,32 @@ EOF
 }
 
 prompt_broker_config() {
-  # Only when BROKER_PROMPT=1 and a TTY is available.
   load_broker_env
   auto_public_url
 
   echo ""
   echo "==> Web terminal (discovery broker) — interactive"
+  echo "    Use the same 7-char token as https://webtermial.vercel.app"
+  echo "    PUBLIC_URL must be reachable from your PC (Salad gateway / Vast mapped port)."
   local default_url="${BROKER_URL:-https://webtermial.vercel.app}"
   local default_public="${PUBLIC_URL:-}"
   local default_token="${BROKER_TOKEN:-}"
+  local input_url input_token input_public
 
-  read -r -p "Broker URL [${default_url}]: " input_url
+  input_url="$(tty_read "Broker URL [${default_url}]: ")"
   BROKER_URL="${input_url:-$default_url}"
   BROKER_URL="${BROKER_URL%/}"
 
   while true; do
     if [[ -n "${default_token}" ]]; then
-      read -r -p "Join token (7 chars) [saved — Enter to keep]: " input_token
+      input_token="$(tty_read "Join token (7 chars) [saved — Enter to keep]: ")"
       if [[ -z "${input_token}" ]]; then
         BROKER_TOKEN="${default_token}"
       else
         BROKER_TOKEN="$(normalize_token "${input_token}")"
       fi
     else
-      read -r -p "Join token (7 letters/digits): " input_token
+      input_token="$(tty_read "Join token (7 letters/digits): ")"
       BROKER_TOKEN="$(normalize_token "${input_token}")"
     fi
     if [[ "${#BROKER_TOKEN}" -eq 7 ]]; then
@@ -552,7 +571,11 @@ prompt_broker_config() {
   done
 
   while true; do
-    read -r -p "Public URL [${default_public}]: " input_public
+    if [[ -z "${default_public}" ]]; then
+      echo "    Tip (Salad): use your container gateway URL that reaches port ${PORT}"
+      echo "         e.g. https://your-name.salad.cloud   (must route to ${PORT})"
+    fi
+    input_public="$(tty_read "Public URL [${default_public}]: ")"
     PUBLIC_URL="${input_public:-$default_public}"
     PUBLIC_URL="${PUBLIC_URL%/}"
     if [[ "${PUBLIC_URL}" =~ ^https?:// ]]; then
@@ -587,13 +610,21 @@ configure_broker() {
     return 0
   fi
 
-  if [[ "${BROKER_PROMPT:-0}" == "1" ]] && [[ -t 0 ]]; then
-    prompt_broker_config
+  # Default ON so Salad/Vast users get the join-token prompt.
+  # Set BROKER_PROMPT=0 to skip (headless / no discovery).
+  if [[ "${BROKER_PROMPT:-1}" == "0" ]]; then
+    echo "==> Broker: off (BROKER_PROMPT=0)"
     return 0
   fi
 
-  echo "==> Broker: off (set BROKER_URL + BROKER_TOKEN + PUBLIC_URL, or BROKER_PROMPT=1)"
-  echo "    Tip on Vast: open port ${PORT} so VAST_TCP_PORT_${PORT} is set; PUBLIC_URL auto-fills."
+  prompt_broker_config
+  if [[ -z "${BROKER_URL:-}" || -z "${PUBLIC_URL:-}" || -z "${BROKER_TOKEN:-}" ]]; then
+    echo "==> Broker: off (prompt incomplete — set env vars and re-run)"
+    return 0
+  fi
+  echo "==> Broker registration enabled"
+  echo "    Broker URL : ${BROKER_URL}"
+  echo "    Public URL : ${PUBLIC_URL}"
 }
 
 # --- main ---
