@@ -1,0 +1,16 @@
+{
+  "name": "openvtm-web-terminal",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250712.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.24.0"
+  }
+}

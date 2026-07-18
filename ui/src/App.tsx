@@ -3,6 +3,7 @@ import {
   api,
   openGenerateStreamSocket,
   openTrackingSocket,
+  resolveApiBaseFromBroker,
   streamPose,
   streamStart,
   streamStop,
@@ -138,6 +139,10 @@ export default function App() {
   useEffect(() => {
     void (async () => {
       try {
+        const remote = await resolveApiBaseFromBroker()
+        if (remote) {
+          console.info(`[broker] using GPU ${remote}`)
+        }
         const c = await api.checkpoints()
         setCheckpoints(c.checkpoints.map((x) => x.label))
         setCkpt(c.default || c.checkpoints.at(-1)?.label || '')

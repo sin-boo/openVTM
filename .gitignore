@@ -20,6 +20,11 @@ build/
 outputs/
 *.log
 
+# Web terminal (Cloudflare)
+web_terminal/node_modules/
+web_terminal/.wrangler/
+web_terminal/dist/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

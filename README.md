@@ -33,6 +33,30 @@ export HF_TOKEN=hf_...
 ./start-server-linux.sh
 ```
 
+## Discovery broker (web terminal)
+
+Images do **not** go through the broker. It only answers “which GPU is online?”
+
+See [`web_terminal/README.md`](web_terminal/README.md). On the GPU machine:
+
+```bash
+export BROKER_URL=https://openvtm-web-terminal.<account>.workers.dev
+export BROKER_SECRET=your-secret
+export PUBLIC_URL=http://137.175.76.24:45323   # Vast mapped URL for port 8765
+export SERVER_ID=vast-45250875                 # optional
+./start-server-linux.sh
+```
+
+Clients:
+
+```bash
+curl "$BROKER_URL/pick"
+# → { "ok": true, "server": { "public_url": "http://...", ... } }
+# then call that public_url for /api/reference and /api/generate
+```
+
+Desktop UI: set `VITE_BROKER_URL` to the Worker URL so the app calls `/pick` on startup.
+
 ## API (one port)
 
 - `GET /api/health`

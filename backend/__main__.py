@@ -162,6 +162,18 @@ def main(argv: list[str] | None = None) -> int:
     base = f"http://{bind_host}:{args.port}"
     _file_log(f"API ready at {base}/api/health")
 
+    try:
+        from backend.broker_heartbeat import start_broker_heartbeat
+
+        hb = start_broker_heartbeat(local_port=args.port, log=_file_log)
+        if hb is None:
+            _file_log(
+                "broker heartbeat off "
+                "(set BROKER_URL, BROKER_SECRET, PUBLIC_URL to register)"
+            )
+    except Exception:
+        _file_log("broker heartbeat failed to start:\n" + traceback.format_exc())
+
     if args.ui == "none":
         _file_log("API-only mode. Press Ctrl+C to stop.")
         try:
