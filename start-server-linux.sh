@@ -18,6 +18,11 @@ fi
 export SDANIME_SERVER_MODE=1
 export TF_CPP_MIN_LOG_LEVEL="${TF_CPP_MIN_LOG_LEVEL:-3}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
+# Force live progress in non-TTY / Vast web shells
+export PYTHONUNBUFFERED=1
+export PIP_PROGRESS_BAR=on
+export HF_HUB_DISABLE_PROGRESS_BARS=0
+export TQDM_MININTERVAL=0.3
 
 echo "==> SDAnime Pose server setup (Linux)"
 echo "    repo root: $(pwd)"
@@ -87,9 +92,12 @@ needs_cu128() {
 
 install_torch() {
   echo "==> Installing PyTorch"
+  echo "    (large CUDA wheels — watch the pip progress bar; extract can take several minutes)"
+  # Prefer an explicit progress bar even when stdout is not a TTY (Vast web terminal).
+  local pip_opts=(--upgrade --progress-bar on)
   if ! have_cmd nvidia-smi; then
     echo "WARNING: nvidia-smi not found — installing CPU torch (slow / may be unusable)."
-    pip install --upgrade torch torchvision torchaudio
+    pip install "${pip_opts[@]}" torch torchvision torchaudio
     return 0
   fi
 
@@ -100,17 +108,17 @@ install_torch() {
 
   if needs_cu128; then
     echo "    Blackwell / sm_12x detected → CUDA 12.8 wheels (required for RTX 5090)"
-    pip install --upgrade torch torchvision torchaudio \
+    pip install "${pip_opts[@]}" torch torchvision torchaudio \
       --index-url https://download.pytorch.org/whl/cu128
   else
     echo "    Trying CUDA 12.4 wheels (fallback: 12.8 → 12.1)"
-    pip install --upgrade torch torchvision torchaudio \
+    pip install "${pip_opts[@]}" torch torchvision torchaudio \
       --index-url https://download.pytorch.org/whl/cu124 \
-      || pip install --upgrade torch torchvision torchaudio \
+      || pip install "${pip_opts[@]}" torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu128 \
-      || pip install --upgrade torch torchvision torchaudio \
+      || pip install "${pip_opts[@]}" torch torchvision torchaudio \
         --index-url https://download.pytorch.org/whl/cu121 \
-      || pip install --upgrade torch torchvision torchaudio
+      || pip install "${pip_opts[@]}" torch torchvision torchaudio
   fi
 }
 
@@ -163,23 +171,72 @@ download_models() {
   fi
 
   echo "==> Downloading models from Hugging Face (${HF_REPO})"
+  echo "    (per-file progress bars below — multi‑GB, may take several minutes)"
   if [[ -n "${HF_TOKEN:-}" ]]; then
     export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
   fi
+
+  # Ensure tqdm is present even if requirements install was skipped/partial
+  pip install --progress-bar on -q tqdm huggingface_hub
 
   python - <<'PY'
 import os
 import sys
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
+from huggingface_hub.utils import enable_progress_bars
+from tqdm.auto import tqdm
+
+# Vast / docker attach often isn't a TTY — force bars anyway.
+enable_progress_bars()
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"
+
+
+class ForceTqdm(tqdm):
+    def __init__(self, *args, **kwargs):
+        kwargs["disable"] = False
+        kwargs.setdefault("mininterval", 0.3)
+        kwargs.setdefault("file", sys.stdout)
+        kwargs.setdefault("dynamic_ncols", True)
+        super().__init__(*args, **kwargs)
+
 
 repo = os.environ.get("HF_REPO", "sinBoo1/models-VT-prototype")
 dest = Path("data/models")
 dest.mkdir(parents=True, exist_ok=True)
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-print(f"snapshot_download {repo} -> {dest.resolve()}")
+
 try:
+    api = HfApi(token=token)
+    info = api.repo_info(repo_id=repo, repo_type="model", files_metadata=True)
+    siblings = list(getattr(info, "siblings", None) or [])
+    total = sum(int(getattr(s, "size", 0) or 0) for s in siblings)
+    print(f"    repo={repo}", flush=True)
+    print(f"    files={len(siblings)}  total≈{total / (1024**3):.2f} GiB → {dest.resolve()}", flush=True)
+    for s in siblings:
+        size = int(getattr(s, "size", 0) or 0)
+        name = getattr(s, "rfilename", "?")
+        if size >= 1024**3:
+            print(f"      • {name}  {size / (1024**3):.2f} GiB", flush=True)
+        elif size > 0:
+            print(f"      • {name}  {size / (1024**2):.1f} MiB", flush=True)
+        else:
+            print(f"      • {name}", flush=True)
+except Exception as exc:
+    print(f"    (could not list repo metadata: {exc})", flush=True)
+    print(f"snapshot_download {repo} -> {dest.resolve()}", flush=True)
+
+try:
+    snapshot_download(
+        repo_id=repo,
+        repo_type="model",
+        local_dir=str(dest),
+        token=token,
+        tqdm_class=ForceTqdm,
+    )
+except TypeError:
+    # Older huggingface_hub without tqdm_class=
     snapshot_download(
         repo_id=repo,
         repo_type="model",
@@ -187,10 +244,10 @@ try:
         token=token,
     )
 except Exception as exc:
-    print(f"ERROR: Hugging Face download failed: {exc}")
-    print("       If the repo is private, export HF_TOKEN=hf_... and retry.")
+    print(f"ERROR: Hugging Face download failed: {exc}", flush=True)
+    print("       If the repo is private, export HF_TOKEN=hf_... and retry.", flush=True)
     sys.exit(1)
-print("download complete")
+print("download complete", flush=True)
 PY
 
   # Public fallback for Anything V5 + IP-Adapter if HF snapshot layout was incomplete
@@ -382,13 +439,13 @@ if [[ ! -d "${VENV_DIR}" ]]; then
 fi
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
-python -m pip install -U pip wheel setuptools
+python -m pip install -U pip wheel setuptools --progress-bar on
 
 install_torch
 cuda_smoke_test
 
 echo "==> Installing ${REQ_FILE}"
-pip install -r "${REQ_FILE}"
+pip install -r "${REQ_FILE}" --progress-bar on
 
 download_models
 verify_models
