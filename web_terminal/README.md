@@ -1,18 +1,48 @@
-# openVTM web terminal (discovery broker)
+# openVTM Web Terminal (Nitro)
 
-Cloudflare Worker that tracks which GPU API servers are online.
-**Does not proxy images** — clients call the returned `public_url` directly.
+Discovery broker **with a status UI**. GPUs heartbeat in; clients call `/pick` for a `public_url`.  
+**Images never pass through this app.**
 
-## Endpoints
+## Run locally
+
+```bash
+cd web_terminal
+npm install
+export BROKER_SECRET=your-secret   # Windows: set BROKER_SECRET=...
+npm run dev
+```
+
+Open **http://localhost:3000** — dashboard shows broker health and live servers.
+
+Production:
+
+```bash
+npm run build
+BROKER_SECRET=your-secret npm start
+```
+
+Deploy elsewhere with Nitro presets, e.g. `NITRO_PRESET=vercel npm run build`.
+
+## UI
+
+Browser dashboard at `/`:
+
+- Broker online / offline
+- Live server count + ready count
+- Current best pick
+- Table of registered GPUs (heartbeat age, load, public URL)
+- Auto-refresh every 5s
+
+## API (same as before)
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
 | GET | `/health` | no | Broker alive |
 | POST | `/register` | `Bearer BROKER_SECRET` | GPU heartbeat |
 | GET | `/servers` | no | List live servers |
-| GET | `/pick` | no | Best server (`ready`, then lowest `load`) |
+| GET | `/pick` | no | Best server |
 
-Heartbeat TTL: **45s**. Miss heartbeats → server disappears from `/pick`.
+Heartbeat TTL: **45s**.
 
 ### Register body
 
@@ -21,44 +51,20 @@ Heartbeat TTL: **45s**. Miss heartbeats → server disappears from `/pick`.
   "id": "vast-45250875",
   "public_url": "http://137.175.76.24:45323",
   "ready": true,
-  "load": 0,
-  "vram_free": null
+  "load": 0
 }
 ```
 
-### Pick response
+## GPU env (Vast)
 
-```json
-{
-  "ok": true,
-  "server": {
-    "id": "vast-45250875",
-    "public_url": "http://137.175.76.24:45323",
-    "ready": true,
-    "load": 0,
-    "updated_at": 1710000000000
-  }
-}
-```
-
-## Deploy
+Point `BROKER_URL` at this Nitro app (local, Vercel, or your host):
 
 ```bash
-cd web_terminal
-npm install
-npx wrangler login
-npx wrangler kv namespace create SERVERS
-# paste id into wrangler.toml (id + preview_id)
-npx wrangler secret put BROKER_SECRET
-npm run deploy
-```
-
-## GPU env (on Vast)
-
-```bash
-export BROKER_URL=https://openvtm-web-terminal.<account>.workers.dev
+export BROKER_URL=https://your-web-terminal.example.com
 export BROKER_SECRET=your-secret
-export PUBLIC_URL=http://137.175.76.24:45323   # Vast mapped port for 8765
-export SERVER_ID=vast-45250875                 # optional
+export PUBLIC_URL=http://137.175.76.24:45323
+export SERVER_ID=vast-45250875
 ./start-server-linux.sh
 ```
+
+Desktop UI: `VITE_BROKER_URL` = same base URL (calls `/pick` on startup).

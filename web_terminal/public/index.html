@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>openVTM · Web Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <header class="top">
+      <div class="brand-block">
+        <p class="brand">openVTM</p>
+        <h1>Web Terminal</h1>
+        <p class="lede">
+          Discovery status for GPU inference servers. Images never pass through
+          this relay — it only shows who is online.
+        </p>
+      </div>
+      <div class="broker-pill" id="brokerPill" data-state="unknown">
+        <span class="dot"></span>
+        <span id="brokerLabel">Checking broker…</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="metrics" aria-label="Summary">
+        <article>
+          <p class="metric-label">Live servers</p>
+          <p class="metric-value" id="metricCount">—</p>
+        </article>
+        <article>
+          <p class="metric-label">Ready</p>
+          <p class="metric-value" id="metricReady">—</p>
+        </article>
+        <article>
+          <p class="metric-label">Best pick</p>
+          <p class="metric-value mono" id="metricPick">—</p>
+        </article>
+        <article>
+          <p class="metric-label">Last refresh</p>
+          <p class="metric-value mono" id="metricRefresh">—</p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Registered servers</h2>
+          <button type="button" id="refreshBtn" class="btn">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Server ID</th>
+                <th>Public URL</th>
+                <th>Load</th>
+                <th>Last heartbeat</th>
+              </tr>
+            </thead>
+            <tbody id="serverRows">
+              <tr class="empty">
+                <td colspan="5">Waiting for first heartbeat…</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="hint">
+          Heartbeats expire after 45s. Set
+          <code>BROKER_URL</code>, <code>BROKER_SECRET</code>, and
+          <code>PUBLIC_URL</code> on the GPU host so it registers here.
+        </p>
+      </section>
+
+      <section class="panel pick-panel">
+        <div class="panel-head">
+          <h2>Current pick</h2>
+          <span class="tag" id="pickTag">idle</span>
+        </div>
+        <pre id="pickBody" class="code-block">{ "ok": false, "error": "no servers available" }</pre>
+      </section>
+    </main>
+
+    <footer>
+      <span>Nitro discovery broker</span>
+      <span id="clock"></span>
+    </footer>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

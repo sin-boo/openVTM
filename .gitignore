@@ -20,8 +20,10 @@ build/
 outputs/
 *.log
 
-# Web terminal (Cloudflare)
+# Web terminal (Nitro)
 web_terminal/node_modules/
+web_terminal/.output/
+web_terminal/.nitro/
 web_terminal/.wrangler/
 web_terminal/dist/
 

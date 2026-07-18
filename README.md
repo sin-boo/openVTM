@@ -35,27 +35,29 @@ export HF_TOKEN=hf_...
 
 ## Discovery broker (web terminal)
 
-Images do **not** go through the broker. It only answers “which GPU is online?”
-
-See [`web_terminal/README.md`](web_terminal/README.md). On the GPU machine:
+Nitro app with a **status dashboard** + JSON discovery API. Images do **not** go through it.
 
 ```bash
-export BROKER_URL=https://openvtm-web-terminal.<account>.workers.dev
+cd web_terminal
+npm install
+BROKER_SECRET=your-secret npm run dev
+# open http://localhost:3000
+```
+
+On the GPU machine:
+
+```bash
+export BROKER_URL=https://your-web-terminal.example.com
 export BROKER_SECRET=your-secret
 export PUBLIC_URL=http://137.175.76.24:45323   # Vast mapped URL for port 8765
 export SERVER_ID=vast-45250875                 # optional
 ./start-server-linux.sh
 ```
 
-Clients:
+Clients: `GET $BROKER_URL/pick` → use `server.public_url` for `/api/reference` + `/api/generate`.  
+Desktop: set `VITE_BROKER_URL` to the web terminal URL.
 
-```bash
-curl "$BROKER_URL/pick"
-# → { "ok": true, "server": { "public_url": "http://...", ... } }
-# then call that public_url for /api/reference and /api/generate
-```
-
-Desktop UI: set `VITE_BROKER_URL` to the Worker URL so the app calls `/pick` on startup.
+See [`web_terminal/README.md`](web_terminal/README.md).
 
 ## API (one port)
 
