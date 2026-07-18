@@ -1,0 +1,2 @@
+*.sh text eol=lf
+start-server-linux.sh text eol=lf

@@ -1,0 +1,15 @@
+# Headless Linux / Vast server deps (torch installed separately by start-server-linux.sh).
+numpy
+pillow
+tqdm
+transformers==4.57.1
+diffusers==0.35.1
+accelerate
+safetensors
+sentencepiece
+huggingface_hub
+onnxruntime
+opencv-python-headless
+fastapi
+uvicorn[standard]
+python-multipart

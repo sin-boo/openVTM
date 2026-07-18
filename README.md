@@ -12,11 +12,12 @@ chmod +x start-server-linux.sh
 ./start-server-linux.sh
 ```
 
-That script will:
+That script is **zero-touch** (no prompts):
 
-1. Create `.venv` and install deps (CUDA torch when `nvidia-smi` works)
-2. Download models into `data/models/`
-3. Start the API in **server mode** on `0.0.0.0:8765`
+1. Create `.venv` and install **CUDA torch** (`cu128` on RTX 5090 / Blackwell, else `cu124`+)
+2. Install headless server deps (`requirements.server.txt`)
+3. Download models from Hugging Face into `data/models/`
+4. CUDA smoke-test, then start the API in **server mode** on `0.0.0.0:8765`
 
 Health check (on the machine):
 
@@ -24,7 +25,7 @@ Health check (on the machine):
 curl http://127.0.0.1:8765/api/health
 ```
 
-On Vast, use the **mapped** public port for 8765 (see instance **Open Ports**, e.g. `PUBLIC_IP:45323 -> 8765`).
+On Vast, open **port 8765** in the instance template. The script auto-builds `PUBLIC_URL` from `PUBLIC_IPADDR` + `VAST_TCP_PORT_8765` when those env vars exist.
 
 Optional: if the HF repo is private, export a token first:
 
@@ -37,21 +38,17 @@ export HF_TOKEN=hf_...
 
 Nitro + React dashboard. GPUs **handshake** with a shared 7-char `BROKER_TOKEN`, get a random name + session, then **heartbeat every 2s**.
 
-```bash
-cd web_terminal
-npm install
-BROKER_TOKEN=<YOUR_7_CHAR_TOKEN> npm run dev
-# open http://localhost:5173
-```
-
-On the GPU machine:
+Broker is **optional**. Pass env vars (or a saved `.broker.env`) — the start script will not prompt:
 
 ```bash
 export BROKER_URL=https://webtermial.vercel.app
-export BROKER_TOKEN=<YOUR_7_CHAR_TOKEN>        # same 7 chars as Vercel — never commit
-export PUBLIC_URL=http://137.175.76.24:45323   # Vast mapped URL for port 8765
+export BROKER_TOKEN=<YOUR_7_CHAR_TOKEN>   # same 7 chars — never commit
+# PUBLIC_URL auto-fills on Vast when port 8765 is open; or set manually:
+# export PUBLIC_URL=http://137.175.76.24:45323
 ./start-server-linux.sh
 ```
+
+Interactive broker setup only if you ask for it: `BROKER_PROMPT=1 ./start-server-linux.sh`
 
 Clients: `GET $BROKER_URL/pick` → use `server.public_url` for generate.  
 Desktop: set `VITE_BROKER_URL` to the web terminal URL.

@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# One-shot Linux server setup + start (Vast / cloud GPU).
-# - Creates .venv if missing
-# - Installs Python deps (CUDA torch when GPU is present)
-# - Downloads models from Hugging Face into data/models/
-# - Prompts for web-terminal join token (saved in .broker.env)
-# - Starts API in server mode on 0.0.0.0:8765
+# One-shot Linux GPU server setup + start (Vast / cloud, including RTX 5090).
+# Zero-touch: venv → CUDA torch → server deps → HF models → API on 0.0.0.0:8765
+# No interactive prompts unless BROKER_PROMPT=1.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")")"
 
@@ -13,63 +10,168 @@ HOST="${SDANIME_HOST:-0.0.0.0}"
 PORT="${SDANIME_PORT:-8765}"
 VENV_DIR="${VENV_DIR:-.venv}"
 BROKER_ENV_FILE="${BROKER_ENV_FILE:-.broker.env}"
+REQ_FILE="${REQ_FILE:-requirements.server.txt}"
+if [[ ! -f "${REQ_FILE}" ]]; then
+  REQ_FILE="requirements.txt"
+fi
 
 export SDANIME_SERVER_MODE=1
 export TF_CPP_MIN_LOG_LEVEL="${TF_CPP_MIN_LOG_LEVEL:-3}"
+export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-0}"
 
 echo "==> SDAnime Pose server setup (Linux)"
 echo "    repo root: $(pwd)"
 echo "    HF models: ${HF_REPO}"
 echo "    bind: ${HOST}:${PORT}"
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: python3 not found. Install Python 3.10+ and retry."
-  exit 1
-fi
+# --- helpers ---
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-if [[ ! -d "${VENV_DIR}" ]]; then
-  echo "==> Creating venv at ${VENV_DIR}"
-  python3 -m venv "${VENV_DIR}"
-fi
-# shellcheck disable=SC1091
-source "${VENV_DIR}/bin/activate"
-python -m pip install -U pip wheel setuptools
+ensure_python() {
+  if ! have_cmd python3; then
+    echo "ERROR: python3 not found. Install Python 3.10+ and retry."
+    exit 1
+  fi
+  local py_minor
+  py_minor="$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)"
+  local py_major
+  py_major="$(python3 -c 'import sys; print(sys.version_info.major)' 2>/dev/null || echo 0)"
+  if [[ "${py_major}" -lt 3 ]] || [[ "${py_major}" -eq 3 && "${py_minor}" -lt 10 ]]; then
+    echo "ERROR: Need Python 3.10+, found $(python3 --version 2>&1)."
+    exit 1
+  fi
+}
 
-echo "==> Installing PyTorch"
-if command -v nvidia-smi >/dev/null 2>&1; then
-  pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision torchaudio \
-    || pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio \
-    || pip install torch
-else
-  echo "WARNING: nvidia-smi not found — installing CPU torch (slow / may be unusable)."
-  pip install torch
-fi
+maybe_apt_basics() {
+  # Best-effort on Ubuntu/Debian images (Vast). Skip if no apt or not root.
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]] || ! have_cmd apt-get; then
+    return 0
+  fi
+  if python3 -c 'import venv' 2>/dev/null; then
+    return 0
+  fi
+  echo "==> Installing python3-venv (apt)"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  apt-get install -y -qq python3-venv python3-pip >/dev/null
+}
 
-echo "==> Installing requirements.txt"
-pip install -r requirements.txt
+gpu_name() {
+  if have_cmd nvidia-smi; then
+    nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+  fi
+}
 
-mkdir -p data/models data/refs outputs
+gpu_compute_cap() {
+  if have_cmd nvidia-smi; then
+    nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -d ' '
+  fi
+}
 
-NEED_DOWNLOAD=0
-if [[ ! -f data/models/AnythingV5V3_v5PrtRE.safetensors ]]; then
-  NEED_DOWNLOAD=1
-fi
-if [[ ! -f data/models/ip-adapter/models/ip-adapter_sd15.bin ]]; then
-  NEED_DOWNLOAD=1
-fi
-if [[ ! -f data/models/finetuned/checkpoints/pose_adapter_step_020000.pt ]] \
-   && [[ ! -f data/models/finetuned/checkpoints/pose_adapter_latest.pt ]]; then
-  NEED_DOWNLOAD=1
-fi
+# RTX 50-series / Blackwell (sm_120) needs PyTorch cu128 — cu124 has no kernels.
+needs_cu128() {
+  local name cap major
+  name="$(gpu_name || true)"
+  cap="$(gpu_compute_cap || true)"
+  if [[ -n "${cap}" ]]; then
+    major="${cap%%.*}"
+    if [[ "${major}" =~ ^[0-9]+$ ]] && [[ "${major}" -ge 12 ]]; then
+      return 0
+    fi
+  fi
+  if echo "${name}" | grep -qiE 'RTX[[:space:]]*50|5090|5080|5070|Blackwell'; then
+    return 0
+  fi
+  return 1
+}
 
-if [[ "${NEED_DOWNLOAD}" -eq 1 ]]; then
+install_torch() {
+  echo "==> Installing PyTorch"
+  if ! have_cmd nvidia-smi; then
+    echo "WARNING: nvidia-smi not found — installing CPU torch (slow / may be unusable)."
+    pip install --upgrade torch torchvision torchaudio
+    return 0
+  fi
+
+  local name cap
+  name="$(gpu_name || true)"
+  cap="$(gpu_compute_cap || true)"
+  echo "    GPU: ${name:-unknown} (compute_cap=${cap:-?})"
+
+  if needs_cu128; then
+    echo "    Blackwell / sm_12x detected → CUDA 12.8 wheels (required for RTX 5090)"
+    pip install --upgrade torch torchvision torchaudio \
+      --index-url https://download.pytorch.org/whl/cu128
+  else
+    echo "    Trying CUDA 12.4 wheels (fallback: 12.8 → 12.1)"
+    pip install --upgrade torch torchvision torchaudio \
+      --index-url https://download.pytorch.org/whl/cu124 \
+      || pip install --upgrade torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cu128 \
+      || pip install --upgrade torch torchvision torchaudio \
+        --index-url https://download.pytorch.org/whl/cu121 \
+      || pip install --upgrade torch torchvision torchaudio
+  fi
+}
+
+cuda_smoke_test() {
+  echo "==> CUDA smoke test"
+  python - <<'PY'
+import sys
+try:
+    import torch
+except Exception as exc:
+    print(f"ERROR: cannot import torch: {exc}")
+    sys.exit(1)
+
+print(f"    torch={torch.__version__} cuda_built={torch.version.cuda}")
+if not torch.cuda.is_available():
+    print("ERROR: torch.cuda.is_available() is False — GPU not usable.")
+    print("       Check nvidia drivers / NVIDIA Container Toolkit, then re-run.")
+    sys.exit(1)
+
+name = torch.cuda.get_device_name(0)
+cap = torch.cuda.get_device_capability(0)
+print(f"    device={name} capability={cap[0]}.{cap[1]}")
+try:
+    x = torch.zeros(1, device="cuda")
+    y = x + 1
+    torch.cuda.synchronize()
+    print(f"    smoke ok (tensor={float(y.item())})")
+except Exception as exc:
+    print(f"ERROR: CUDA kernel smoke failed: {exc}")
+    print("       RTX 50-series needs cu128 PyTorch. Re-run after: pip uninstall -y torch torchvision torchaudio")
+    sys.exit(1)
+PY
+}
+
+models_complete() {
+  [[ -f data/models/AnythingV5V3_v5PrtRE.safetensors ]] \
+    && [[ -f data/models/ip-adapter/models/ip-adapter_sd15.bin ]] \
+    && [[ -f data/models/ip-adapter/models/ip-adapter-plus_sd15.bin ]] \
+    && [[ -d data/models/ip-adapter/models/image_encoder ]] \
+    && { [[ -f data/models/finetuned/checkpoints/pose_adapter_step_020000.pt ]] \
+         || [[ -f data/models/finetuned/checkpoints/pose_adapter_latest.pt ]]; }
+}
+
+download_models() {
+  mkdir -p data/models data/refs outputs
+
+  if models_complete; then
+    echo "==> Models already present under data/models/ — skip download"
+    return 0
+  fi
+
   echo "==> Downloading models from Hugging Face (${HF_REPO})"
   if [[ -n "${HF_TOKEN:-}" ]]; then
     export HUGGING_FACE_HUB_TOKEN="${HF_TOKEN}"
   fi
+
   python - <<'PY'
 import os
+import sys
 from pathlib import Path
+
 from huggingface_hub import snapshot_download
 
 repo = os.environ.get("HF_REPO", "sinBoo1/models-VT-prototype")
@@ -77,25 +179,75 @@ dest = Path("data/models")
 dest.mkdir(parents=True, exist_ok=True)
 token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 print(f"snapshot_download {repo} -> {dest.resolve()}")
-snapshot_download(
-    repo_id=repo,
-    repo_type="model",
-    local_dir=str(dest),
-    token=token,
-)
+try:
+    snapshot_download(
+        repo_id=repo,
+        repo_type="model",
+        local_dir=str(dest),
+        token=token,
+    )
+except Exception as exc:
+    print(f"ERROR: Hugging Face download failed: {exc}")
+    print("       If the repo is private, export HF_TOKEN=hf_... and retry.")
+    sys.exit(1)
 print("download complete")
 PY
-else
-  echo "==> Models already present under data/models/ — skip download"
-fi
 
-if [[ ! -f data/models/AnythingV5V3_v5PrtRE.safetensors ]]; then
-  echo "ERROR: Anything V5 missing after download."
-  echo "       Check HF repo access (public or set HF_TOKEN) and retry."
-  exit 1
-fi
+  # Public fallback for Anything V5 + IP-Adapter if HF snapshot layout was incomplete
+  if [[ ! -f data/models/AnythingV5V3_v5PrtRE.safetensors ]] \
+     || [[ ! -f data/models/ip-adapter/models/ip-adapter_sd15.bin ]]; then
+    echo "==> Filling public weights via backend.download_model"
+    python -m backend.download_model
+  fi
+}
 
-# --- Web terminal broker config (interactive, saved locally) ---
+verify_models() {
+  echo "==> Verifying required model files"
+  local ok=1
+  local f
+  for f in \
+    data/models/AnythingV5V3_v5PrtRE.safetensors \
+    data/models/ip-adapter/models/ip-adapter_sd15.bin \
+    data/models/ip-adapter/models/ip-adapter-plus_sd15.bin
+  do
+    if [[ -f "$f" ]]; then
+      echo "    OK  $f"
+    else
+      echo "    MISSING $f"
+      ok=0
+    fi
+  done
+  if [[ -d data/models/ip-adapter/models/image_encoder ]]; then
+    echo "    OK  data/models/ip-adapter/models/image_encoder/"
+  else
+    echo "    MISSING data/models/ip-adapter/models/image_encoder/"
+    ok=0
+  fi
+  if [[ -f data/models/finetuned/checkpoints/pose_adapter_step_020000.pt ]]; then
+    echo "    OK  pose_adapter_step_020000.pt"
+  elif [[ -f data/models/finetuned/checkpoints/pose_adapter_latest.pt ]]; then
+    echo "    OK  pose_adapter_latest.pt"
+  else
+    echo "    MISSING finetuned PoseAdapter checkpoint"
+    ok=0
+  fi
+  if [[ -f data/models/finetuned/param_stats.json ]]; then
+    echo "    OK  param_stats.json"
+  else
+    echo "    WARN param_stats.json missing (engine will use slider fallback)"
+  fi
+  if [[ -f data/refs/train_char_1.png ]]; then
+    echo "    OK  data/refs/train_char_1.png"
+  else
+    echo "    WARN default ref missing (upload via /api/reference)"
+  fi
+  if [[ "${ok}" -ne 1 ]]; then
+    echo "ERROR: required models missing after download."
+    echo "       Check HF repo access (public or set HF_TOKEN) and retry."
+    exit 1
+  fi
+}
+
 load_broker_env() {
   if [[ -f "${BROKER_ENV_FILE}" ]]; then
     # shellcheck disable=SC1090
@@ -103,7 +255,31 @@ load_broker_env() {
     # shellcheck disable=SC1091
     source "${BROKER_ENV_FILE}"
     set +a
+    echo "==> Loaded broker settings from ${BROKER_ENV_FILE}"
   fi
+}
+
+# Vast: PUBLIC_IPADDR + VAST_TCP_PORT_<internal>
+auto_public_url() {
+  if [[ -n "${PUBLIC_URL:-}" ]]; then
+    return 0
+  fi
+  local ip mapped
+  ip="${PUBLIC_IPADDR:-}"
+  mapped_var="VAST_TCP_PORT_${PORT}"
+  mapped="${!mapped_var:-}"
+  if [[ -z "${ip}" && -f /var/lib/vastai_kaalia/host_ipaddr ]]; then
+    ip="$(tr -d '[:space:]' </var/lib/vastai_kaalia/host_ipaddr || true)"
+  fi
+  if [[ -n "${ip}" && -n "${mapped}" ]]; then
+    PUBLIC_URL="http://${ip}:${mapped}"
+    export PUBLIC_URL
+    echo "==> Auto PUBLIC_URL from Vast: ${PUBLIC_URL}"
+  fi
+}
+
+normalize_token() {
+  echo "$1" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9' | cut -c1-7
 }
 
 save_broker_env() {
@@ -117,38 +293,13 @@ EOF
   echo "==> Saved broker settings to ${BROKER_ENV_FILE}"
 }
 
-normalize_token() {
-  # Uppercase alphanumeric, max 7 chars
-  echo "$1" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9' | cut -c1-7
-}
-
 prompt_broker_config() {
+  # Only when BROKER_PROMPT=1 and a TTY is available.
   load_broker_env
+  auto_public_url
 
   echo ""
-  echo "==> Web terminal (discovery broker)"
-  echo "    This registers the GPU so https://webtermial.vercel.app can see it."
-  echo ""
-
-  local use_broker="${BROKER_ENABLE:-}"
-  if [[ -z "${use_broker}" ]]; then
-    if [[ -n "${BROKER_TOKEN:-}" && -n "${PUBLIC_URL:-}" ]]; then
-      read -r -p "Use saved broker settings from ${BROKER_ENV_FILE}? [Y/n] " use_broker
-      use_broker="${use_broker:-Y}"
-    else
-      read -r -p "Register with the web terminal? [Y/n] " use_broker
-      use_broker="${use_broker:-Y}"
-    fi
-  fi
-
-  case "${use_broker}" in
-    n|N|no|NO)
-      unset BROKER_URL BROKER_TOKEN PUBLIC_URL BROKER_SECRET || true
-      echo "    Broker registration skipped."
-      return 0
-      ;;
-  esac
-
+  echo "==> Web terminal (discovery broker) — interactive"
   local default_url="${BROKER_URL:-https://webtermial.vercel.app}"
   local default_public="${PUBLIC_URL:-}"
   local default_token="${BROKER_TOKEN:-}"
@@ -159,25 +310,25 @@ prompt_broker_config() {
 
   while true; do
     if [[ -n "${default_token}" ]]; then
-      read -r -p "Join token (7 chars) [saved ******* — Enter to keep]: " input_token
+      read -r -p "Join token (7 chars) [saved — Enter to keep]: " input_token
       if [[ -z "${input_token}" ]]; then
         BROKER_TOKEN="${default_token}"
       else
         BROKER_TOKEN="$(normalize_token "${input_token}")"
       fi
     else
-      read -r -p "Join token (7 letters/digits from the web terminal): " input_token
+      read -r -p "Join token (7 letters/digits): " input_token
       BROKER_TOKEN="$(normalize_token "${input_token}")"
     fi
     if [[ "${#BROKER_TOKEN}" -eq 7 ]]; then
       break
     fi
-    echo "    Token must be exactly 7 A–Z / 0–9 characters. Try again."
+    echo "    Token must be exactly 7 A–Z / 0–9 characters."
     default_token=""
   done
 
   while true; do
-    read -r -p "Public URL (Vast mapped port for 8765, e.g. http://IP:45323) [${default_public}]: " input_public
+    read -r -p "Public URL [${default_public}]: " input_public
     PUBLIC_URL="${input_public:-$default_public}"
     PUBLIC_URL="${PUBLIC_URL%/}"
     if [[ "${PUBLIC_URL}" =~ ^https?:// ]]; then
@@ -187,38 +338,69 @@ prompt_broker_config() {
     default_public=""
   done
 
-  echo ""
-  echo "    Broker URL : ${BROKER_URL}"
-  echo "    Join token : ******* (saved, not shown)"
-  echo "    Public URL : ${PUBLIC_URL}"
-  read -r -p "Save and continue? [Y/n] " confirm
-  confirm="${confirm:-Y}"
-  case "${confirm}" in
-    n|N|no|NO)
-      echo "Aborted. Re-run when ready."
-      exit 1
-      ;;
-  esac
-
   export BROKER_URL BROKER_TOKEN PUBLIC_URL
   save_broker_env
 }
 
-# Skip prompts if already fully provided via environment (non-interactive / CI)
-if [[ -n "${BROKER_URL:-}" && -n "${PUBLIC_URL:-}" && ( -n "${BROKER_TOKEN:-}" || -n "${BROKER_SECRET:-}" ) && "${BROKER_NONINTERACTIVE:-}" == "1" ]]; then
-  echo "==> Broker env already set (BROKER_NONINTERACTIVE=1) — skipping prompts"
-  export BROKER_TOKEN="${BROKER_TOKEN:-$BROKER_SECRET}"
-else
-  prompt_broker_config
+configure_broker() {
+  load_broker_env
+  auto_public_url
+  export BROKER_TOKEN="${BROKER_TOKEN:-${BROKER_SECRET:-}}"
+
+  if [[ -n "${BROKER_URL:-}" && -n "${PUBLIC_URL:-}" && -n "${BROKER_TOKEN:-}" ]]; then
+    BROKER_URL="${BROKER_URL%/}"
+    PUBLIC_URL="${PUBLIC_URL%/}"
+    BROKER_TOKEN="$(normalize_token "${BROKER_TOKEN}")"
+    export BROKER_URL PUBLIC_URL BROKER_TOKEN
+    if [[ "${#BROKER_TOKEN}" -ne 7 ]]; then
+      echo "WARNING: BROKER_TOKEN must be 7 chars — broker registration disabled."
+      unset BROKER_URL BROKER_TOKEN PUBLIC_URL || true
+      return 0
+    fi
+    echo "==> Broker registration enabled"
+    echo "    Broker URL : ${BROKER_URL}"
+    echo "    Public URL : ${PUBLIC_URL}"
+    return 0
+  fi
+
+  if [[ "${BROKER_PROMPT:-0}" == "1" ]] && [[ -t 0 ]]; then
+    prompt_broker_config
+    return 0
+  fi
+
+  echo "==> Broker: off (set BROKER_URL + BROKER_TOKEN + PUBLIC_URL, or BROKER_PROMPT=1)"
+  echo "    Tip on Vast: open port ${PORT} so VAST_TCP_PORT_${PORT} is set; PUBLIC_URL auto-fills."
+}
+
+# --- main ---
+ensure_python
+maybe_apt_basics
+
+if [[ ! -d "${VENV_DIR}" ]]; then
+  echo "==> Creating venv at ${VENV_DIR}"
+  python3 -m venv "${VENV_DIR}"
 fi
+# shellcheck disable=SC1091
+source "${VENV_DIR}/bin/activate"
+python -m pip install -U pip wheel setuptools
+
+install_torch
+cuda_smoke_test
+
+echo "==> Installing ${REQ_FILE}"
+pip install -r "${REQ_FILE}"
+
+download_models
+verify_models
+configure_broker
 
 echo "==> Starting API (server mode) on ${HOST}:${PORT}"
 echo "    Health: http://127.0.0.1:${PORT}/api/health"
-echo "    On Vast, use the mapped public IP:port for 8765 (see Open Ports)."
+if [[ -n "${PUBLIC_URL:-}" ]]; then
+  echo "    Public: ${PUBLIC_URL}/api/health"
+fi
 if [[ -n "${BROKER_URL:-}" && -n "${PUBLIC_URL:-}" && -n "${BROKER_TOKEN:-}" ]]; then
-  echo "    Broker: ${BROKER_URL}"
-  echo "    PUBLIC_URL=${PUBLIC_URL}"
-  echo "    Join token set — will /handshake then /heartbeat every 2s"
+  echo "    Broker: ${BROKER_URL} (handshake + heartbeat every 2s)"
 else
   echo "    Broker: off"
 fi
