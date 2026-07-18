@@ -506,6 +506,11 @@ normalize_token() {
   echo "$1" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9' | cut -c1-7
 }
 
+# Trim CR/LF/spaces (web-terminal pastes often include \r or look typed but read empty).
+trim_ws() {
+  printf '%s' "$1" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
 # Read a line from the real console when possible (Salad/Vast web shells
 # often have non-TTY stdin, so plain `read` never prompts).
 tty_read() {
@@ -520,7 +525,7 @@ tty_read() {
     echo "WARNING: no TTY — cannot prompt interactively." >&2
     echo "         Export BROKER_URL BROKER_TOKEN PUBLIC_URL instead." >&2
   fi
-  printf '%s' "${reply}"
+  trim_ws "${reply}"
 }
 
 save_broker_env() {
@@ -574,14 +579,19 @@ prompt_broker_config() {
     if [[ -z "${default_public}" ]]; then
       echo "    Tip (Salad): use your container gateway URL that reaches port ${PORT}"
       echo "         e.g. https://your-name.salad.cloud   (must route to ${PORT})"
+      echo "    If paste fails in this web terminal, Ctrl+C and run with env vars:"
+      echo "         export BROKER_URL=https://webtermial.vercel.app"
+      echo "         export BROKER_TOKEN=YOUR7CHR"
+      echo "         export PUBLIC_URL=https://your-name.salad.cloud"
+      echo "         ./start-server-linux.sh"
     fi
     input_public="$(tty_read "Public URL [${default_public}]: ")"
-    PUBLIC_URL="${input_public:-$default_public}"
+    PUBLIC_URL="$(trim_ws "${input_public:-$default_public}")"
     PUBLIC_URL="${PUBLIC_URL%/}"
     if [[ "${PUBLIC_URL}" =~ ^https?:// ]]; then
       break
     fi
-    echo "    Must start with http:// or https://"
+    echo "    Must start with http:// or https:// (got: '${PUBLIC_URL}')"
     default_public=""
   done
 
