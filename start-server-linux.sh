@@ -167,7 +167,12 @@ models_complete() {
 # Download one file from the configured public HF repo.
 # Force IPv4 because some Vast hosts advertise an unusable IPv6 route, causing
 # Python requests/curl to stall or end TLS with SSL_UNEXPECTED_EOF.
-# Quiet curl (no progress bar) so parallel jobs do not interleave bars.
+hf_log() {
+  # Always stderr + timestamp so Salad/Vast web terminals show activity
+  # even when stdout is buffered or jobs run in parallel.
+  printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2
+}
+
 hf_curl_file() {
   local rel="$1"
   local dest="$2"
@@ -177,29 +182,36 @@ hf_curl_file() {
   local url="${base}/${HF_REPO}/resolve/main/${escaped_rel}"
   mkdir -p "$(dirname "${dest}")"
   if [[ -s "${dest}" ]]; then
-    echo "    skip (exists) ${rel}"
+    hf_log "skip (exists) ${rel}"
     return 0
   fi
-  echo "    ↓ ${rel}"
+  hf_log "START ${rel}"
   local tmp="${dest}.partial"
-  if ! curl -4 --http1.1 -L --fail --silent --show-error \
+  # -# = progress meter on stderr (visible during long image_encoder / ckpt pulls)
+  if ! curl -4 --http1.1 -L --fail -# \
       --connect-timeout 30 --retry 2 --retry-delay 2 \
       -o "${tmp}" "${url}"; then
     rm -f "${tmp}"
-    echo "    FAIL ${rel}"
+    hf_log "FAIL  ${rel}"
     return 1
   fi
   mv -f "${tmp}" "${dest}"
-  echo "    ✓ ${rel}"
+  local bytes
+  bytes="$(wc -c < "${dest}" | tr -d ' ')"
+  hf_log "DONE  ${rel} (${bytes} bytes)"
 }
 
 # Cap concurrent HF downloads (override with HF_DOWNLOAD_JOBS).
 # Helps folders like image_encoder (many small files / TLS handshakes).
 hf_wait_for_slot() {
   local max_jobs="$1"
+  local ignore_pid="${2:-}"
   while true; do
     local running
     running="$(jobs -rp | wc -l | tr -d ' ')"
+    if [[ -n "${ignore_pid}" ]] && kill -0 "${ignore_pid}" 2>/dev/null; then
+      running=$((running - 1))
+    fi
     if [[ "${running}" -lt "${max_jobs}" ]]; then
       return 0
     fi
@@ -226,6 +238,7 @@ download_models() {
   trap 'rm -f "${manifest}"' RETURN
 
   echo "==> Reading public Hugging Face repository manifest (forced IPv4)"
+  echo "    (this can take up to ~30s if HF is slow — hang here means network/TLS)"
   if ! curl -4 --http1.1 -L --fail --silent --show-error \
       --connect-timeout 30 --retry 0 \
       -o "${manifest}" "${hf_base}/api/models/${HF_REPO}"; then
@@ -234,6 +247,7 @@ download_models() {
     echo "       This is a network/TLS problem on the host, not a download retry problem."
     exit 1
   fi
+  echo "    manifest ok"
 
   local -a repo_files=()
   mapfile -t repo_files < <(
@@ -266,35 +280,69 @@ PY
     max_jobs=32
   fi
 
+  local need=0
+  local rel
+  for rel in "${repo_files[@]}"; do
+    if [[ ! -s "data/models/${rel}" ]]; then
+      need=$((need + 1))
+    fi
+  done
+
   echo "==> Downloading every file from the public Hugging Face repository"
   echo "    repo: ${HF_REPO}"
   echo "    dest: $(pwd)/data/models"
-  echo "    files: ${#repo_files[@]}"
+  echo "    files in repo: ${#repo_files[@]}  still need: ${need}"
   echo "    parallel jobs: ${max_jobs} (set HF_DOWNLOAD_JOBS to change)"
+  echo "    progress: START/DONE lines + curl meters on stderr"
 
   local fail_dir
   fail_dir="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '${fail_dir}'" RETURN
 
-  local rel
+  # Heartbeat: print growing .partial files so long curls are visible.
+  (
+    while [[ ! -f "${fail_dir}/_downloads_finished" ]]; do
+      sleep 8
+      [[ -f "${fail_dir}/_downloads_finished" ]] && break
+      partials=0
+      while IFS= read -r line; do
+        partials=$((partials + 1))
+        hf_log " partial ${line}"
+      done < <(find data/models -type f -name '*.partial' -printf '%p (%s bytes)\n' 2>/dev/null || true)
+      if [[ "${partials}" -eq 0 ]]; then
+        hf_log "… waiting (no .partial files yet — connecting or between files)"
+      else
+        hf_log "… ${partials} download(s) in progress"
+      fi
+    done
+  ) &
+  local heartbeat_pid=$!
+
+  local -a dl_pids=()
   for rel in "${repo_files[@]}"; do
-    hf_wait_for_slot "${max_jobs}"
+    hf_wait_for_slot "${max_jobs}" "${heartbeat_pid}"
     (
       if ! hf_curl_file "${rel}" "data/models/${rel}"; then
-        # One fail file per download (content = relative path). Avoids append races.
         marker="$(printf '%s' "${rel}" | tr '/ ' '__')"
         printf '%s\n' "${rel}" > "${fail_dir}/${marker}"
       fi
     ) &
+    dl_pids+=($!)
   done
-  # Do not let a failed job trip set -e; we report via fail_dir below.
-  wait || true
+
+  local pid
+  for pid in "${dl_pids[@]}"; do
+    wait "${pid}" || true
+  done
+  : > "${fail_dir}/_downloads_finished"
+  wait "${heartbeat_pid}" 2>/dev/null || true
 
   local -a failed=()
   local marker_file
   for marker_file in "${fail_dir}"/*; do
     [[ -e "${marker_file}" ]] || continue
+    [[ "$(basename "${marker_file}")" == "_downloads_finished" ]] && continue
     failed+=("$(cat "${marker_file}")")
   done
   if [[ "${#failed[@]}" -gt 0 ]]; then
