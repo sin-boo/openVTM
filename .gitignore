@@ -1,0 +1,27 @@
+# Python / venvs
+.venv/
+.venv-build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Local models (download via start-server-linux.sh / HF)
+data/models/
+data/models/.cache/
+
+# Build / desktop packaging artifacts
+ui/node_modules/
+ui/dist/
+ui/build/
+dist/
+build/
+*.spec.bak
+outputs/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

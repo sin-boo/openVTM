@@ -1,0 +1,19 @@
+torch
+numpy
+pillow
+tqdm
+transformers==4.57.1
+diffusers==0.35.1
+# Windows-only: needed for torch.compile / inductor (official triton has no Win wheels).
+triton-windows>=3.7.0; platform_system=="Windows"
+accelerate
+safetensors
+sentencepiece
+huggingface_hub
+onnxruntime
+opencv-python
+fastapi
+uvicorn[standard]
+python-multipart
+pywebview
+pyinstaller
